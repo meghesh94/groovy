@@ -23,6 +23,11 @@ from web.discovery_runner import RunConfig, get_event_queue, is_running, start_d
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.secret_key = config.SECRET_KEY
 
+# Support running behind reverse proxy (HuggingFace Spaces, etc.)
+from werkzeug.middleware.proxy_fix import ProxyFix
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
 # Initialize database on import
 db.init()
 
