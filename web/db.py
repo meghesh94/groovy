@@ -33,6 +33,14 @@ def get_db():
 def init():
     """Create tables if they don't exist."""
     with get_db() as conn:
+        # Migrate old users table (had email column) to new schema (username/password)
+        try:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+            if "email" in cols and "username" not in cols:
+                conn.execute("DROP TABLE IF EXISTS users")
+        except Exception:
+            pass
+
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
@@ -97,7 +105,6 @@ def init():
 
 
 def _hash_password(password: str) -> str:
-    import hashlib
     return hashlib.sha256(password.encode()).hexdigest()
 
 
