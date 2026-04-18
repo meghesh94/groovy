@@ -77,9 +77,18 @@ def init():
                 mert_data TEXT DEFAULT '{}',
                 rating INTEGER DEFAULT 0,
                 status TEXT DEFAULT 'discovered',
+                drop_date TEXT DEFAULT '',
+                drop_order INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
         """)
+
+        # Migrations for existing databases
+        for col, default in [("drop_date", "''"), ("drop_order", "0")]:
+            try:
+                conn.execute(f"ALTER TABLE songs ADD COLUMN {col} TEXT DEFAULT {default}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
 
 # ── Users ──────────────────────────────────────────────────────────
@@ -267,3 +276,65 @@ def get_approved_tracks(user_id: str) -> list[dict]:
                 "genres": [],
             })
         return tracks
+
+
+# ── Drops ──────────────────────────────────────────────────────────
+
+
+def _song_row_to_dict(row) -> dict:
+    """Convert a songs table row to the dict format the frontend expects."""
+    s = dict(row)
+    s["_id"] = s.pop("id")
+    s["mert"] = json.loads(s.pop("mert_data"))
+    return s
+
+
+def tag_drop(user_id: str, song_ids: list[str], drop_date: str):
+    """Mark songs as part of a daily drop."""
+    with get_db() as conn:
+        for i, song_id in enumerate(song_ids):
+            conn.execute(
+                "UPDATE songs SET drop_date = ?, drop_order = ? WHERE id = ? AND user_id = ?",
+                (drop_date, i, song_id, user_id),
+            )
+
+
+def get_drop(user_id: str, drop_date: str) -> list[dict]:
+    """Get all songs for a specific daily drop, ordered by drop_order."""
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT * FROM songs
+               WHERE user_id = ? AND drop_date = ?
+               ORDER BY drop_order""",
+            (user_id, drop_date),
+        ).fetchall()
+        return [_song_row_to_dict(r) for r in rows]
+
+
+def get_collection(user_id: str) -> list[dict]:
+    """Get all liked songs (rating >= 4) across all drops."""
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT * FROM songs
+               WHERE user_id = ? AND status = 'approved'
+               ORDER BY created_at DESC""",
+            (user_id,),
+        ).fetchall()
+        return [_song_row_to_dict(r) for r in rows]
+
+
+def get_drop_dates(user_id: str) -> list[dict]:
+    """Get all drop dates with stats, most recent first."""
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT drop_date,
+                      COUNT(*) as total,
+                      SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as liked,
+                      SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) as skipped
+               FROM songs
+               WHERE user_id = ? AND drop_date != ''
+               GROUP BY drop_date
+               ORDER BY drop_date DESC""",
+            (user_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]

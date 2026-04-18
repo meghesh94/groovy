@@ -7,6 +7,7 @@ import sys
 import threading
 import webbrowser
 from collections import Counter
+from datetime import date
 from queue import Empty
 
 from authlib.integrations.flask_client import OAuth
@@ -344,6 +345,10 @@ def api_discover_reset():
     return jsonify({"ok": True})
 
 
+# Track which date a discovery run is generating for
+_drop_date_for_run = {}
+
+
 @app.route("/api/discover", methods=["POST"])
 @login_required
 def api_discover():
@@ -367,8 +372,13 @@ def api_discover():
         skip_words=body.get("skip_words", RunConfig().skip_words),
     )
 
-    tracks = _get_all_tracks(current_user_id())
+    uid = current_user_id()
+    tracks = _get_all_tracks(uid)
     run_id = start_discovery(run_config, library_tracks=tracks if tracks else None)
+
+    # Remember the drop date for this run (capture now, not at completion)
+    _drop_date_for_run[uid] = date.today().isoformat()
+
     return jsonify({"run_id": run_id})
 
 
@@ -388,6 +398,11 @@ def api_discover_stream():
 
             if event.get("type") == "result" and "song" in event:
                 db.save_song(uid, event["song"])
+
+            # Tag picks with drop_date before yielding the complete event
+            if event.get("type") == "complete" and event.get("picks"):
+                drop_date = _drop_date_for_run.pop(uid, date.today().isoformat())
+                db.tag_drop(uid, event["picks"], drop_date)
 
             yield f"data: {json.dumps(event)}\n\n"
 
@@ -432,6 +447,36 @@ def api_rate(song_id):
 def api_skip(song_id):
     db.update_song_status(current_user_id(), song_id, "skipped")
     return jsonify({"ok": True})
+
+
+# ── API: Drops ─────────────────────────────────────────────────────
+
+@app.route("/api/drop")
+@login_required
+def api_drop():
+    uid = current_user_id()
+    drop_date = request.args.get("date", date.today().isoformat())
+    songs = db.get_drop(uid, drop_date)
+    reviewed = sum(1 for s in songs if s["status"] != "discovered")
+    return jsonify({
+        "date": drop_date,
+        "songs": songs,
+        "total": len(songs),
+        "reviewed": reviewed,
+        "unreviewed": len(songs) - reviewed,
+    })
+
+
+@app.route("/api/drop/history")
+@login_required
+def api_drop_history():
+    return jsonify(db.get_drop_dates(current_user_id()))
+
+
+@app.route("/api/collection")
+@login_required
+def api_collection():
+    return jsonify({"songs": db.get_collection(current_user_id())})
 
 
 # ── Run ─────────────────────────────────────────────────────────────

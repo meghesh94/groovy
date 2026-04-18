@@ -6,27 +6,32 @@
     <title>Groovy — Music Discovery</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/style.css?v=10">
+    <link rel="stylesheet" href="/static/style.css?v=20">
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <script src="/static/app.js?v=10"></script>
+    <script src="/static/app.js?v=20"></script>
 </head>
 <body>
-<div class="app" x-data="sotdApp()" x-init="init()">
+<div class="app" x-data="groovyApp()" x-init="init()">
 
     <!-- ─── Header ──────────────────────────────────────────── -->
     <header class="header">
         <h1><span>Groovy</span></h1>
+
         <template x-if="user">
-            <div class="header-right">
-                <div class="header-stats">
-                    <span><strong x-text="playlists.length"></strong> playlists</span>
-                    <span><strong x-text="profile?.track_count || 0"></strong> songs</span>
-                    <span><strong x-text="indexedCount"></strong> MERT indexed</span>
-                </div>
-                <div class="user-menu">
-                    <img class="user-avatar" :src="user.picture" :alt="user.name" referrerpolicy="no-referrer">
-                    <a href="/auth/logout" class="logout-link">Sign out</a>
-                </div>
+            <nav class="nav-tabs">
+                <button class="nav-tab" :class="{ active: currentView === 'today' }"
+                        @click="currentView = 'today'">Today</button>
+                <button class="nav-tab" :class="{ active: currentView === 'collection' }"
+                        @click="currentView = 'collection'; loadCollection()">Collection</button>
+                <button class="nav-tab" :class="{ active: currentView === 'settings' }"
+                        @click="currentView = 'settings'">Settings</button>
+            </nav>
+        </template>
+
+        <template x-if="user">
+            <div class="user-menu">
+                <img class="user-avatar" :src="user.picture" :alt="user.name" referrerpolicy="no-referrer">
+                <a href="/auth/logout" class="logout-link">Sign out</a>
             </div>
         </template>
     </header>
@@ -45,14 +50,241 @@
         </div>
     </template>
 
-    <!-- ─── Sidebar: Controls ───────────────────────────────── -->
-    <aside class="sidebar" x-show="user">
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- TODAY VIEW                                             -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <main class="main" x-show="user && currentView === 'today'">
 
-        <h2>Your Playlists</h2>
+        <!-- Empty: no drop today -->
+        <template x-if="dropState === 'empty'">
+            <div class="drop-empty">
+                <div class="drop-empty-icon">
+                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r="0.5"/></svg>
+                </div>
+                <h2>Ready for today's picks?</h2>
+                <p>We'll search for new music based on your taste and score it with MERT.</p>
+                <button class="generate-btn" @click="generateDrop()" :disabled="!hasPlaylists">
+                    Generate Today's Drop
+                </button>
+                <template x-if="!hasPlaylists">
+                    <p class="drop-hint">Add a playlist in Settings first.</p>
+                </template>
+                <template x-if="lastDrop">
+                    <p class="drop-hint">
+                        Last drop: <span x-text="lastDrop.drop_date"></span>
+                        — <span x-text="lastDrop.liked"></span> liked
+                    </p>
+                </template>
+            </div>
+        </template>
 
-        <div class="library-section">
-            <!-- Add playlist input -->
-            <div style="display:flex; gap:6px;">
+        <!-- Generating: discovery in progress -->
+        <template x-if="dropState === 'generating'">
+            <div class="drop-generating">
+                <h2>Finding your songs...</h2>
+                <div class="progress-section">
+                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+                        <span class="phase-badge" x-text="phase"></span>
+                        <span style="font-size:0.85rem; color:var(--text-secondary)" x-text="phaseMessage"></span>
+                    </div>
+                    <template x-if="progressTotal > 0">
+                        <div>
+                            <div class="progress-bar-container">
+                                <div class="progress-bar-fill" :style="'width:' + progressPercent() + '%'"></div>
+                            </div>
+                            <div class="progress-label" x-text="progressLabel"></div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </template>
+
+        <!-- Audition: one song at a time -->
+        <template x-if="dropState === 'audition' && currentDropSong()">
+            <div class="audition-wrap">
+                <!-- Progress dots -->
+                <div class="progress-dots">
+                    <template x-for="(song, i) in dropSongs" :key="song._id">
+                        <div class="dot"
+                             :class="{
+                                 active: i === dropIndex,
+                                 reviewed: song.status !== 'discovered',
+                                 liked: song.status === 'approved'
+                             }"></div>
+                    </template>
+                </div>
+
+                <div class="audition-card" :key="currentDropSong()._id">
+                    <!-- Large thumbnail -->
+                    <div class="audition-thumb-wrap">
+                        <img class="audition-thumb"
+                             :src="ytThumb(currentDropSong().yt_video_id)"
+                             :alt="currentDropSong().name">
+                        <div class="audition-vinyl-hole"></div>
+                        <button class="audition-play-overlay" @click="playSong(currentDropSong())">
+                            <span x-text="isCurrentlyPlaying(currentDropSong()._id) ? '&#10074;&#10074;' : '&#9654;'"></span>
+                        </button>
+                    </div>
+
+                    <!-- Song info -->
+                    <div class="audition-info">
+                        <div class="audition-title" x-text="currentDropSong().name"></div>
+                        <div class="audition-artist" x-text="currentDropSong().artist"></div>
+                    </div>
+
+                    <!-- Sounds like -->
+                    <template x-if="currentDropSong().mert?.closest_songs?.length">
+                        <div class="audition-sounds-like">
+                            Sounds like
+                            <strong x-text="currentDropSong().mert.closest_songs[0].name + ' — ' + currentDropSong().mert.closest_songs[0].artist"></strong>
+                            <span class="sim-badge" x-text="currentDropSong().mert.closest_songs[0].similarity.toFixed(3)"></span>
+                        </div>
+                    </template>
+
+                    <!-- Meta badges -->
+                    <div class="audition-meta">
+                        <template x-if="currentDropSong().mert?.similarity_top5">
+                            <span class="sim-badge">
+                                MERT <span x-text="currentDropSong().mert.similarity_top5.toFixed(3)"></span>
+                            </span>
+                        </template>
+                        <template x-if="currentDropSong().view_count">
+                            <span class="sim-badge" :style="'background:' + (currentDropSong().view_count > 10000000 ? 'rgba(248,81,73,0.2); color:#f85149' : currentDropSong().view_count > 1000000 ? 'rgba(210,153,34,0.2); color:#d29922' : 'rgba(0,212,170,0.2); color:#00d4aa')">
+                                <span x-text="formatViews(currentDropSong().view_count)"></span> views
+                            </span>
+                        </template>
+                        <template x-if="currentDropSong().release_year > 0">
+                            <span class="sim-badge" style="background:rgba(139,148,158,0.15); color:var(--text-secondary)">
+                                <span x-text="currentDropSong().release_year"></span>
+                            </span>
+                        </template>
+                    </div>
+
+                    <!-- Actions: stars + skip -->
+                    <div class="audition-actions">
+                        <button class="skip-btn" @click="skipAndNext()">Skip</button>
+                        <div class="star-rating star-rating-lg">
+                            <template x-for="star in [1,2,3,4,5]" :key="star">
+                                <button class="star-btn"
+                                        :class="{ filled: hoverStar >= star || (songRatings[currentDropSong()._id] || 0) >= star }"
+                                        @mouseenter="hoverStar = star"
+                                        @mouseleave="hoverStar = 0"
+                                        @click="rateAndNext(star)">
+                                </button>
+                            </template>
+                        </div>
+                        <a class="yt-link" :href="'https://music.youtube.com/watch?v=' + currentDropSong().yt_video_id" target="_blank">
+                            YT Music &#8599;
+                        </a>
+                    </div>
+
+                    <div class="audition-position">
+                        Song <span x-text="dropIndex + 1"></span> of <span x-text="dropSongs.length"></span>
+                    </div>
+                </div>
+            </div>
+        </template>
+
+        <!-- Done: all reviewed -->
+        <template x-if="dropState === 'done'">
+            <div class="drop-done">
+                <h2>Today's Drop</h2>
+                <div class="drop-summary-stats">
+                    <template x-if="dropLikedCount() > 0">
+                        <div class="summary-stat liked">
+                            <span class="stat-num" x-text="dropLikedCount()"></span>
+                            <span class="stat-label">liked</span>
+                        </div>
+                    </template>
+                    <template x-if="dropSkippedCount() > 0">
+                        <div class="summary-stat skipped">
+                            <span class="stat-num" x-text="dropSkippedCount()"></span>
+                            <span class="stat-label">skipped</span>
+                        </div>
+                    </template>
+                </div>
+
+                <div class="drop-summary-grid">
+                    <template x-for="song in dropSongs" :key="song._id">
+                        <div class="summary-card" :class="{ liked: song.status === 'approved', skipped: song.status === 'skipped' }">
+                            <img class="summary-thumb" :src="ytThumb(song.yt_video_id)" :alt="song.name">
+                            <div class="summary-info">
+                                <div class="summary-title" x-text="song.name"></div>
+                                <div class="summary-artist" x-text="song.artist"></div>
+                            </div>
+                            <div class="summary-rating">
+                                <template x-if="song.status === 'approved'">
+                                    <span class="summary-stars" x-text="'&#9733;'.repeat(song.rating)"></span>
+                                </template>
+                                <template x-if="song.status === 'skipped'">
+                                    <span style="color:var(--text-tertiary)">skipped</span>
+                                </template>
+                            </div>
+                            <button class="action-btn play-inline" @click="playSong(song)" style="flex-shrink:0">
+                                <span x-text="isCurrentlyPlaying(song._id) ? '&#10074;&#10074;' : '&#9654;'"></span>
+                            </button>
+                        </div>
+                    </template>
+                </div>
+
+                <p class="drop-comeback">Come back tomorrow for more.</p>
+            </div>
+        </template>
+
+    </main>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- COLLECTION VIEW                                       -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <main class="main" x-show="user && currentView === 'collection'">
+
+        <template x-if="collectionSongs.length > 0">
+            <div>
+                <h2 class="section-heading">
+                    Your Collection
+                    <span style="color:var(--accent)" x-text="'(' + collectionSongs.length + ')'"></span>
+                </h2>
+                <div class="collection-grid">
+                    <template x-for="song in collectionSongs" :key="song._id">
+                        <div class="collection-card">
+                            <img class="collection-thumb" :src="ytThumb(song.yt_video_id)" :alt="song.name">
+                            <div class="collection-info">
+                                <div class="collection-title" x-text="song.name"></div>
+                                <div class="collection-artist" x-text="song.artist"></div>
+                                <div class="collection-meta">
+                                    <span class="summary-stars" x-text="'&#9733;'.repeat(song.rating)"></span>
+                                    <template x-if="song.drop_date">
+                                        <span style="color:var(--text-tertiary); font-size:0.75rem" x-text="song.drop_date"></span>
+                                    </template>
+                                </div>
+                            </div>
+                            <button class="action-btn play-inline" @click="playSong(song)">
+                                <span x-text="isCurrentlyPlaying(song._id) ? '&#10074;&#10074;' : '&#9654;'"></span>
+                            </button>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </template>
+
+        <template x-if="collectionSongs.length === 0">
+            <div class="empty-state">
+                <h2>No songs yet</h2>
+                <p>Songs you rate 4+ stars will appear here.</p>
+            </div>
+        </template>
+
+    </main>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- SETTINGS VIEW                                         -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <main class="main settings-view" x-show="user && currentView === 'settings'">
+
+        <div class="settings-section">
+            <h2 class="section-heading">Your Playlists</h2>
+
+            <div style="display:flex; gap:6px; margin-bottom:16px;">
                 <input type="text" class="text-input" placeholder="Paste Spotify or YT Music playlist URL..."
                        x-ref="playlistInput"
                        @keydown.enter="addPlaylist($refs.playlistInput.value); $refs.playlistInput.value = ''">
@@ -60,8 +292,7 @@
                         @click="addPlaylist($refs.playlistInput.value); $refs.playlistInput.value = ''">Add</button>
             </div>
 
-            <!-- Playlist cards -->
-            <div class="playlist-list" style="margin-top:10px">
+            <div class="playlist-list">
                 <template x-for="pl in playlists" :key="pl.playlist_id">
                     <div class="playlist-card">
                         <div class="playlist-card-info">
@@ -74,328 +305,118 @@
                 </template>
                 <template x-if="playlists.length === 0">
                     <div style="font-size:0.8rem; color:var(--text-tertiary); padding:8px 0;">
-                        No playlists yet. Paste a URL above to start building your taste profile.
+                        No playlists yet. Paste a URL above.
                     </div>
                 </template>
             </div>
 
-            <!-- Index button -->
             <template x-if="playlists.length > 0">
-                <div style="margin-top:10px;">
-                    <div style="display:flex; align-items:center; gap:10px;">
-                        <button class="action-btn" style="color:var(--accent); border-color:var(--accent)"
-                                :disabled="indexing"
-                                @click="buildIndex()">
-                            <span x-text="indexing ? 'Indexing...' : (indexedCount > 0 ? 'Rebuild Index' : 'Build MERT Index')"></span>
-                        </button>
-                        <span style="font-size:0.75rem; color:var(--text-tertiary)" x-show="indexedCount > 0" x-text="indexedCount + ' indexed'"></span>
-                    </div>
-                    <div x-show="indexMessage" style="margin-top:6px; font-size:0.8rem; color:var(--accent)" x-text="indexMessage"></div>
+                <div style="margin-top:16px; display:flex; align-items:center; gap:10px;">
+                    <button class="action-btn" style="color:var(--accent); border-color:var(--accent)"
+                            :disabled="indexing"
+                            @click="buildIndex()">
+                        <span x-text="indexing ? 'Indexing...' : (indexedCount > 0 ? 'Rebuild MERT Index' : 'Build MERT Index')"></span>
+                    </button>
+                    <span style="font-size:0.75rem; color:var(--text-tertiary)" x-show="indexedCount > 0" x-text="indexedCount + ' indexed'"></span>
+                    <span x-show="indexMessage" style="font-size:0.8rem; color:var(--accent)" x-text="indexMessage"></span>
                 </div>
             </template>
         </div>
 
-        <h2>Discovery Controls</h2>
+        <div class="settings-section">
+            <h2 class="section-heading">Discovery Config</h2>
 
-        <!-- Pillar weight sliders -->
-        <div class="slider-group">
-            <div class="slider-label">
-                <span>Play my songs, find similar</span>
-                <span class="slider-value" x-text="config.radio_seeds_count"></span>
-            </div>
-            <div class="slider-hint">Picks songs from your library, gets "Up Next" recommendations</div>
-            <input type="range" min="0" max="20" x-model.number="config.radio_seeds_count">
-        </div>
-
-        <div class="slider-group">
-            <div class="slider-label">
-                <span>Find similar artists</span>
-                <span class="slider-value" x-text="config.artist_vibe_count"></span>
-            </div>
-            <div class="slider-hint">"Artists similar to X" for each artist in your library</div>
-            <input type="range" min="0" max="15" x-model.number="config.artist_vibe_count">
-        </div>
-
-        <div class="slider-group">
-            <div class="slider-label">
-                <span>Find songs like mine</span>
-                <span class="slider-value" x-text="config.era_queries_count"></span>
-            </div>
-            <div class="slider-hint">"Songs like X by Y" for tracks in your library</div>
-            <input type="range" min="0" max="13" x-model.number="config.era_queries_count">
-        </div>
-
-        <h2>View count filter</h2>
-
-        <div class="slider-group">
-            <div class="slider-label">
-                <span>Max views</span>
-                <span class="slider-value" x-text="formatMaxViews(config.popularity_max)"></span>
-            </div>
-            <div class="slider-hint">Skip songs with too many views — the sweet spot for discovery</div>
-            <input type="range" min="0" max="500000000" step="100000"
-                   x-model.number="config.popularity_max">
-        </div>
-
-        <div class="view-presets" style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:4px;">
-            <button class="preset-btn" :class="{ active: config.popularity_max === 500000 }" @click="config.popularity_max = 500000">500K</button>
-            <button class="preset-btn" :class="{ active: config.popularity_max === 1000000 }" @click="config.popularity_max = 1000000">1M</button>
-            <button class="preset-btn" :class="{ active: config.popularity_max === 5000000 }" @click="config.popularity_max = 5000000">5M</button>
-            <button class="preset-btn" :class="{ active: config.popularity_max === 20000000 }" @click="config.popularity_max = 20000000">20M</button>
-            <button class="preset-btn" :class="{ active: config.popularity_max === 500000000 }" @click="config.popularity_max = 500000000">No limit</button>
-        </div>
-
-        <h2>Release year</h2>
-
-        <div class="slider-group">
-            <div class="slider-label">
-                <span>From</span>
-                <span class="slider-value" x-text="config.year_min || 'Any'"></span>
-            </div>
-            <input type="range" min="0" max="2026" step="1" x-model.number="config.year_min">
-        </div>
-
-        <div class="view-presets" style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:4px;">
-            <button class="preset-btn" :class="{ active: config.year_min === 0 }" @click="config.year_min = 0">Any</button>
-            <button class="preset-btn" :class="{ active: config.year_min === 2020 }" @click="config.year_min = 2020">2020+</button>
-            <button class="preset-btn" :class="{ active: config.year_min === 2023 }" @click="config.year_min = 2023">2023+</button>
-            <button class="preset-btn" :class="{ active: config.year_min === 2025 }" @click="config.year_min = 2025">2025+</button>
-        </div>
-
-        <h2>How deep to dig</h2>
-
-        <div class="slider-group">
-            <div class="slider-label">
-                <span>Songs to listen to</span>
-                <span class="slider-value" x-text="config.listen_count"></span>
-            </div>
-            <div class="slider-hint">How many candidates MERT analyzes per run</div>
-            <input type="range" min="3" max="50" x-model.number="config.listen_count">
-        </div>
-
-        <div class="slider-group">
-            <div class="slider-label">
-                <span>Top picks</span>
-                <span class="slider-value" x-text="config.final_picks"></span>
-            </div>
-            <div class="slider-hint">How many best songs to highlight</div>
-            <input type="range" min="1" max="20" x-model.number="config.final_picks">
-        </div>
-
-        <!-- Query lists -->
-        <h2>Search queries</h2>
-
-        <template x-if="queries">
-            <div>
-                <details class="query-section">
-                    <summary>Seed songs — "play something like this" (<span x-text="queries.radio_seeds.length"></span>)</summary>
-                    <div class="query-chips">
-                        <template x-for="seed in queries.radio_seeds" :key="seed.query">
-                            <span class="query-chip"
-                                  :class="{ active: isQueryActive(seed.query) }"
-                                  @click="toggleQuery(seed.query)"
-                                  x-text="seed.name + ' — ' + seed.artist">
-                            </span>
-                        </template>
+            <div class="settings-grid">
+                <div class="slider-group">
+                    <div class="slider-label">
+                        <span>Play my songs, find similar</span>
+                        <span class="slider-value" x-text="config.radio_seeds_count"></span>
                     </div>
-                </details>
+                    <input type="range" min="0" max="20" x-model.number="config.radio_seeds_count">
+                </div>
 
-                <details class="query-section">
-                    <summary>Similar artists (<span x-text="queries.artist_vibe_queries.length"></span>)</summary>
-                    <div class="query-chips">
-                        <template x-for="q in queries.artist_vibe_queries" :key="q">
-                            <span class="query-chip"
-                                  :class="{ active: isQueryActive(q) }"
-                                  @click="toggleQuery(q)"
-                                  x-text="q">
-                            </span>
-                        </template>
+                <div class="slider-group">
+                    <div class="slider-label">
+                        <span>Find similar artists</span>
+                        <span class="slider-value" x-text="config.artist_vibe_count"></span>
                     </div>
-                </details>
-            </div>
-        </template>
+                    <input type="range" min="0" max="15" x-model.number="config.artist_vibe_count">
+                </div>
 
-        <!-- Run button -->
-        <button class="run-btn"
-                :disabled="running"
-                @click="startDiscovery()">
-            <span x-show="!running">Run Discovery</span>
-            <span x-show="running">Running...</span>
-        </button>
+                <div class="slider-group">
+                    <div class="slider-label">
+                        <span>Find songs like mine</span>
+                        <span class="slider-value" x-text="config.era_queries_count"></span>
+                    </div>
+                    <input type="range" min="0" max="13" x-model.number="config.era_queries_count">
+                </div>
 
-    </aside>
-
-    <!-- ─── Main: Profile + Results ─────────────────────────── -->
-    <main class="main" x-show="user">
-
-        <!-- Taste Profile -->
-        <template x-if="profile && profile.track_count > 0">
-            <div class="taste-profile">
-
-                <!-- Song collection — vinyl grid -->
-                <div class="profile-card collection-card">
-                    <h3>Your collection</h3>
-                    <div class="vinyl-grid">
-                        <template x-for="song in profileSongs" :key="song.yt_video_id">
-                            <div class="vinyl-mini" :title="song.name + ' — ' + song.artist">
-                                <img :src="ytThumb(song.yt_video_id)"
-                                     :alt="song.name"
-                                     loading="lazy">
-                                <div class="vinyl-mini-hole"></div>
-                            </div>
-                        </template>
+                <div class="slider-group">
+                    <div class="slider-label">
+                        <span>Max views</span>
+                        <span class="slider-value" x-text="formatMaxViews(config.popularity_max)"></span>
+                    </div>
+                    <input type="range" min="0" max="500000000" step="100000" x-model.number="config.popularity_max">
+                    <div class="view-presets">
+                        <button class="preset-btn" :class="{ active: config.popularity_max === 500000 }" @click="config.popularity_max = 500000">500K</button>
+                        <button class="preset-btn" :class="{ active: config.popularity_max === 1000000 }" @click="config.popularity_max = 1000000">1M</button>
+                        <button class="preset-btn" :class="{ active: config.popularity_max === 5000000 }" @click="config.popularity_max = 5000000">5M</button>
+                        <button class="preset-btn" :class="{ active: config.popularity_max === 20000000 }" @click="config.popularity_max = 20000000">20M</button>
+                        <button class="preset-btn" :class="{ active: config.popularity_max === 500000000 }" @click="config.popularity_max = 500000000">No limit</button>
                     </div>
                 </div>
 
-                <!-- Artist bubbles -->
-                <div class="profile-card">
-                    <h3>Your artists</h3>
-                    <div class="artist-bubbles">
-                        <template x-for="artist in profile.top_artists" :key="artist.name">
-                            <div class="artist-bubble"
-                                 :style="'--size:' + Math.max(36, Math.min(80, 28 + (artist.count / maxArtistCount()) * 52)) + 'px; --delay:' + Math.random() * 0.3 + 's'">
-                                <span class="artist-bubble-name" x-text="artist.name"></span>
-                                <span class="artist-bubble-count" x-text="artist.count"></span>
-                            </div>
-                        </template>
+                <div class="slider-group">
+                    <div class="slider-label">
+                        <span>Year from</span>
+                        <span class="slider-value" x-text="config.year_min || 'Any'"></span>
+                    </div>
+                    <input type="range" min="0" max="2026" step="1" x-model.number="config.year_min">
+                    <div class="view-presets">
+                        <button class="preset-btn" :class="{ active: config.year_min === 0 }" @click="config.year_min = 0">Any</button>
+                        <button class="preset-btn" :class="{ active: config.year_min === 2020 }" @click="config.year_min = 2020">2020+</button>
+                        <button class="preset-btn" :class="{ active: config.year_min === 2023 }" @click="config.year_min = 2023">2023+</button>
+                        <button class="preset-btn" :class="{ active: config.year_min === 2025 }" @click="config.year_min = 2025">2025+</button>
                     </div>
                 </div>
 
-            </div>
-        </template>
-
-        <!-- Empty profile -->
-        <template x-if="!profile || profile.track_count === 0">
-            <div class="empty-state">
-                <h2>Your taste starts here</h2>
-                <p>Add a playlist from the sidebar to build your music profile.</p>
-            </div>
-        </template>
-
-        <!-- Progress -->
-        <template x-if="running || phase === 'complete' || phase === 'error'">
-            <div class="progress-section">
-                <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
-                    <span class="phase-badge" x-text="phase"></span>
-                    <span style="font-size:0.85rem; color:var(--text-secondary)" x-text="phaseMessage"></span>
-                </div>
-                <template x-if="progressTotal > 0">
-                    <div>
-                        <div class="progress-bar-container">
-                            <div class="progress-bar-fill" :style="'width:' + progressPercent() + '%'"></div>
-                        </div>
-                        <div class="progress-label" x-text="progressLabel"></div>
+                <div class="slider-group">
+                    <div class="slider-label">
+                        <span>Songs to score</span>
+                        <span class="slider-value" x-text="config.listen_count"></span>
                     </div>
-                </template>
+                    <input type="range" min="3" max="50" x-model.number="config.listen_count">
+                </div>
+
+                <div class="slider-group">
+                    <div class="slider-label">
+                        <span>Top picks per drop</span>
+                        <span class="slider-value" x-text="config.final_picks"></span>
+                    </div>
+                    <input type="range" min="1" max="10" x-model.number="config.final_picks">
+                </div>
             </div>
-        </template>
+        </div>
 
-        <!-- Results -->
-        <template x-if="songs.length > 0">
-            <div>
-                <h2 style="font-size:0.75rem; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-tertiary); margin-bottom:16px;">
-                    Discovered Songs
-                    <span style="color:var(--accent)" x-text="'(' + songs.length + ')'"></span>
-                </h2>
-                <div class="results-grid">
-                    <template x-for="song in songs" :key="song._id">
-                        <div class="song-card"
-                             :class="{
-                                 picked: isSongPicked(song._id) && !isSongSkipped(song._id),
-                                 skipped: isSongSkipped(song._id),
-                             }">
-                            <!-- Vinyl thumbnail -->
-                            <div class="vinyl-wrap">
-                                <img class="vinyl-thumb"
-                                     :src="ytThumb(song.yt_video_id)"
-                                     :alt="song.name"
-                                     loading="lazy">
-                                <div class="vinyl-hole"></div>
-                            </div>
-
-                            <!-- Song info -->
-                            <div class="song-info">
-                                <div class="song-title" x-text="song.name"></div>
-                                <div class="song-artist" x-text="song.artist"></div>
-
-                                <div class="song-meta">
-                                    <span class="sim-badge"
-                                          x-text="(song.mert?.similarity_top5 || 0).toFixed(3)">
-                                    </span>
-                                    <template x-if="song.view_count != null">
-                                        <span class="sim-badge" :style="'background:' + (song.view_count > 10000000 ? 'rgba(248,81,73,0.2); color:#f85149' : song.view_count > 1000000 ? 'rgba(210,153,34,0.2); color:#d29922' : 'rgba(0,212,170,0.2); color:#00d4aa')">
-                                            <span x-text="formatViews(song.view_count)"></span> views
-                                        </span>
-                                    </template>
-                                    <template x-if="song.release_year > 0">
-                                        <span class="sim-badge" style="background:rgba(139,148,158,0.15); color:var(--text-secondary)">
-                                            <span x-text="song.release_year"></span>
-                                        </span>
-                                    </template>
-                                    <template x-if="isSongPicked(song._id)">
-                                        <span class="sim-badge" style="background:rgba(0,212,170,0.3)">TOP PICK</span>
-                                    </template>
-                                    <template x-if="isSongApproved(song._id)">
-                                        <span class="sim-badge" style="background:rgba(0,212,170,0.3)">APPROVED</span>
-                                    </template>
-                                </div>
-
-                                <template x-if="song.mert?.closest_songs?.length">
-                                    <div class="sounds-like">
-                                        Sounds like:
-                                        <span x-text="song.mert.closest_songs[0].name + ' — ' + song.mert.closest_songs[0].artist"></span>
-                                        (<span x-text="song.mert.closest_songs[0].similarity.toFixed(3)"></span>)
-                                    </div>
-                                </template>
-
-                                <template x-if="song.source_query">
-                                    <div class="source-query">
-                                        Found via: <span x-text="song.source_query"></span>
-                                    </div>
-                                </template>
-
-                                <div class="song-actions">
-                                    <button class="action-btn play-inline"
-                                            @click="playSong(song)">
-                                        <span x-text="isCurrentlyPlaying(song._id) ? '&#10074;&#10074; Pause' : '&#9654; Play'"></span>
-                                    </button>
-
-                                    <!-- Star rating -->
-                                    <div class="star-rating">
-                                        <template x-for="star in [1,2,3,4,5]" :key="star">
-                                            <button class="star-btn"
-                                                    :class="{ filled: (songRatings[song._id] || 0) >= star }"
-                                                    :disabled="isSongApproved(song._id)"
-                                                    @click="rateSong(song._id, star)">
-                                            </button>
-                                        </template>
-                                    </div>
-
-                                    <button class="action-btn skip"
-                                            :disabled="isSongSkipped(song._id)"
-                                            @click="skipSong(song._id)">
-                                        Skip
-                                    </button>
-                                    <a class="action-btn play-btn"
-                                       :href="song.yt_link || ('https://music.youtube.com/watch?v=' + song.yt_video_id)"
-                                       target="_blank">
-                                        YT Music &#8599;
-                                    </a>
-                                </div>
-                            </div>
+        <div class="settings-section">
+            <h2 class="section-heading">Taste Profile</h2>
+            <div style="display:flex; gap:12px; font-size:0.85rem; color:var(--text-secondary);">
+                <span><strong style="color:var(--accent)" x-text="playlists.length"></strong> playlists</span>
+                <span><strong style="color:var(--accent)" x-text="profile?.track_count || 0"></strong> songs</span>
+                <span><strong style="color:var(--accent)" x-text="indexedCount"></strong> MERT indexed</span>
+            </div>
+            <template x-if="profile && profile.top_artists && profile.top_artists.length > 0">
+                <div class="artist-bubbles" style="margin-top:16px;">
+                    <template x-for="artist in profile.top_artists" :key="artist.name">
+                        <div class="artist-bubble"
+                             :style="'--size:' + Math.max(36, Math.min(70, 28 + (artist.count / maxArtistCount()) * 42)) + 'px'">
+                            <span class="artist-bubble-name" x-text="artist.name"></span>
+                            <span class="artist-bubble-count" x-text="artist.count"></span>
                         </div>
                     </template>
                 </div>
-            </div>
-        </template>
-
-        <!-- Empty state -->
-        <template x-if="!running && songs.length === 0 && phase !== 'complete'">
-            <div class="empty-state">
-                <h2>Ready to discover</h2>
-                <p>Adjust the controls and hit Run Discovery to find your next Song of the Day.</p>
-            </div>
-        </template>
+            </template>
+        </div>
 
     </main>
 
