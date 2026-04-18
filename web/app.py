@@ -57,6 +57,19 @@ def current_user_id() -> str:
 
 @app.route("/auth/login")
 def login():
+    # Dev bypass: skip Google OAuth when credentials aren't configured
+    if not config.GOOGLE_CLIENT_ID or not config.GOOGLE_CLIENT_SECRET:
+        user = db.upsert_user(
+            user_id="dev-user",
+            email="dev@groovy.local",
+            name="Dev User",
+            picture="",
+        )
+        session["user_id"] = user["id"]
+        session["user_name"] = user["name"]
+        session["user_picture"] = user["picture"]
+        return redirect("/")
+
     redirect_uri = url_for("auth_callback", _external=True)
     return oauth.google.authorize_redirect(redirect_uri)
 
@@ -148,7 +161,10 @@ def index():
 
 # ── API: Audio playback ─────────────────────────────────────────
 
-AUDIO_CACHE_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "audio_cache"))
+AUDIO_CACHE_DIR = os.environ.get(
+    "GROOVY_DATA_DIR",
+    os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")),
+) + "/audio_cache"
 
 @app.route("/audio/<video_id>.wav")
 def serve_audio(video_id):
@@ -482,7 +498,8 @@ def api_collection():
 # ── Run ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    port = 5555
+    port = int(os.environ.get("PORT", 5555))
     print(f"\n  Groovy → http://localhost:{port}\n")
-    webbrowser.open(f"http://localhost:{port}")
+    if not os.environ.get("PORT"):
+        webbrowser.open(f"http://localhost:{port}")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)

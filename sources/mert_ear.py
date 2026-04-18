@@ -15,8 +15,9 @@ import torch
 import torchaudio
 from transformers import AutoModel, Wav2Vec2FeatureExtractor
 
-AUDIO_CACHE_DIR = Path(__file__).parent.parent / "audio_cache"
-LIBRARY_INDEX_PATH = Path(__file__).parent.parent / "library_index.npz"
+_DATA_DIR = Path(os.environ.get("GROOVY_DATA_DIR", Path(__file__).parent.parent))
+AUDIO_CACHE_DIR = _DATA_DIR / "audio_cache"
+LIBRARY_INDEX_PATH = _DATA_DIR / "library_index.npz"
 MODEL_NAME = "m-a-p/MERT-v1-95M"
 SAMPLE_RATE = 24000
 CLIP_DURATION_SEC = 60

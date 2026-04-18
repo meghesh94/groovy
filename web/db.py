@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "sotd.db"
+DB_PATH = Path(os.environ.get("GROOVY_DATA_DIR", Path(__file__).resolve().parent.parent)) / "sotd.db"
 
 
 def _get_conn() -> sqlite3.Connection:
