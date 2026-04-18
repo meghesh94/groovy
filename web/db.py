@@ -67,6 +67,8 @@ def init():
                 album TEXT DEFAULT '',
                 yt_video_id TEXT DEFAULT '',
                 spotify_link TEXT DEFAULT '',
+                spotify_id TEXT DEFAULT '',
+                preview_url TEXT DEFAULT '',
                 genres TEXT DEFAULT '[]',
                 UNIQUE(playlist_id, name, artist)
             );
@@ -94,9 +96,15 @@ def init():
         """)
 
         # Migrations for existing databases
-        for col, default in [("drop_date", "''"), ("drop_order", "0")]:
+        migrations = [
+            ("songs", "drop_date", "''"),
+            ("songs", "drop_order", "0"),
+            ("playlist_tracks", "spotify_id", "''"),
+            ("playlist_tracks", "preview_url", "''"),
+        ]
+        for table, col, default in migrations:
             try:
-                conn.execute(f"ALTER TABLE songs ADD COLUMN {col} TEXT DEFAULT {default}")
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT DEFAULT {default}")
             except sqlite3.OperationalError:
                 pass  # column already exists
 
@@ -154,8 +162,8 @@ def add_playlist_tracks(playlist_id: str, tracks: list[dict]):
     with get_db() as conn:
         conn.executemany(
             """INSERT OR IGNORE INTO playlist_tracks
-               (playlist_id, name, artist, album, yt_video_id, spotify_link, genres)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (playlist_id, name, artist, album, yt_video_id, spotify_link, spotify_id, preview_url, genres)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 (
                     playlist_id,
@@ -164,6 +172,8 @@ def add_playlist_tracks(playlist_id: str, tracks: list[dict]):
                     t.get("album", ""),
                     t.get("yt_video_id", ""),
                     t.get("spotify_link", ""),
+                    t.get("spotify_id", ""),
+                    t.get("preview_url", ""),
                     json.dumps(t.get("genres", [])),
                 )
                 for t in tracks
@@ -203,7 +213,8 @@ def get_all_tracks(user_id: str) -> list[dict]:
     """Get all tracks across a user's playlists, deduped by (name, artist)."""
     with get_db() as conn:
         rows = conn.execute("""
-            SELECT pt.name, pt.artist, pt.album, pt.yt_video_id, pt.spotify_link, pt.genres
+            SELECT pt.name, pt.artist, pt.album, pt.yt_video_id, pt.spotify_link,
+                   pt.spotify_id, pt.preview_url, pt.genres
             FROM playlist_tracks pt
             JOIN playlists p ON p.id = pt.playlist_id
             WHERE p.user_id = ?

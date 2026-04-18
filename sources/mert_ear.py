@@ -97,9 +97,57 @@ def embed_audio(audio_path: Path) -> Optional[np.ndarray]:
     return embedding
 
 
-def embed_song(yt_video_id: str) -> Optional[np.ndarray]:
-    """Download + embed a single song. Returns 768-dim vector or None."""
-    audio_path = download_audio(yt_video_id)
+def download_preview(preview_url: str, track_id: str) -> Optional[Path]:
+    """Download a Spotify 30-second preview MP3 and convert to WAV.
+
+    Returns path to the cached WAV file, or None on failure.
+    """
+    AUDIO_CACHE_DIR.mkdir(exist_ok=True)
+    out_path = AUDIO_CACHE_DIR / f"sp_{track_id}.wav"
+
+    if out_path.exists():
+        return out_path
+
+    if not preview_url:
+        return None
+
+    try:
+        import requests
+        resp = requests.get(preview_url, timeout=15)
+        resp.raise_for_status()
+
+        # Save MP3 then convert to WAV with ffmpeg
+        mp3_path = AUDIO_CACHE_DIR / f"sp_{track_id}.mp3"
+        mp3_path.write_bytes(resp.content)
+
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(mp3_path),
+             "-ac", "1", "-ar", str(SAMPLE_RATE), str(out_path)],
+            capture_output=True, timeout=30,
+        )
+        mp3_path.unlink(missing_ok=True)
+
+        return out_path if out_path.exists() else None
+    except Exception as e:
+        print(f"  [Preview] Failed for {track_id}: {e}")
+        return None
+
+
+def embed_song(yt_video_id: str = None, preview_url: str = None, spotify_id: str = None) -> Optional[np.ndarray]:
+    """Download + embed a single song. Tries Spotify preview first, falls back to yt-dlp.
+
+    Returns 768-dim vector or None.
+    """
+    audio_path = None
+
+    # Try Spotify preview first (works on servers, no bot detection)
+    if preview_url and spotify_id:
+        audio_path = download_preview(preview_url, spotify_id)
+
+    # Fall back to yt-dlp (works locally, blocked on datacenter IPs)
+    if audio_path is None and yt_video_id:
+        audio_path = download_audio(yt_video_id)
+
     if audio_path is None:
         return None
     return embed_audio(audio_path)
@@ -127,19 +175,23 @@ def build_library_index(library_tracks: list[dict], force: bool = False, on_prog
     songs = []
 
     for i, track in enumerate(library_tracks):
-        yt_link = track.get("youtube_link", "")
-        vid = _extract_video_id(yt_link)
-        if not vid:
-            continue
-
         name = track.get("name", "?")
         artist = track.get("artist", "?")
+
+        yt_link = track.get("youtube_link", "")
+        vid = _extract_video_id(yt_link) or track.get("yt_video_id", "")
+        preview_url = track.get("preview_url", "")
+        spotify_id = track.get("spotify_id", "")
+
+        if not vid and not preview_url:
+            continue
+
         print(f"  [{i+1}/{len(library_tracks)}] {name} — {artist}")
 
-        emb = embed_song(vid)
+        emb = embed_song(yt_video_id=vid, preview_url=preview_url, spotify_id=spotify_id)
         if emb is not None:
             embeddings.append(emb)
-            songs.append({"name": name, "artist": artist, "yt_video_id": vid})
+            songs.append({"name": name, "artist": artist, "yt_video_id": vid or ""})
 
         if on_progress:
             on_progress(len(embeddings), len(library_tracks), f"{name} — {artist}")

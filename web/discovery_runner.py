@@ -326,11 +326,22 @@ def _run_discovery(config: RunConfig, library_tracks=None):
             if not any(w in title for w in skip_lower):
                 filtered.append(s)
 
+        # Resolve Spotify preview URLs for candidates (for server-side MERT scoring)
+        _emit("status", phase="previews", message=f"Resolving audio previews for {len(filtered)} songs...")
+        try:
+            from sources.spotify import resolve_preview_urls
+            filtered = resolve_preview_urls(filtered)
+        except Exception as e:
+            _emit("warning", message=f"Spotify preview resolution failed: {e}")
+
         _emit("status", phase="scoring", message=f"Scoring {len(filtered)} songs with MERT...")
         scored = []
         for i, candidate in enumerate(filtered):
             vid = candidate.get("yt_video_id", "")
-            if not vid:
+            preview_url = candidate.get("preview_url", "")
+            spotify_id = candidate.get("spotify_id", "")
+
+            if not vid and not preview_url:
                 continue
 
             name = candidate.get("name", "?")
@@ -338,7 +349,7 @@ def _run_discovery(config: RunConfig, library_tracks=None):
             _emit("progress", phase="scoring", done=i + 1, total=len(filtered),
                   song=f"{name} — {artist}")
 
-            emb = embed_song(vid)
+            emb = embed_song(yt_video_id=vid, preview_url=preview_url, spotify_id=spotify_id)
             if emb is None:
                 _emit("warning", message=f"Failed to embed: {name} — {artist}")
                 continue

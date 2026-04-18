@@ -85,6 +85,13 @@ def fetch_ytmusic_playlist(playlist_id: str) -> dict:
     if not tracks and result.stderr:
         raise RuntimeError(f"yt-dlp error: {result.stderr[:200]}")
 
+    # Resolve Spotify preview URLs for MERT scoring on servers
+    try:
+        from sources.spotify import resolve_preview_urls
+        tracks = resolve_preview_urls(tracks)
+    except Exception as e:
+        print(f"[Playlist] Spotify preview resolution failed (non-fatal): {e}")
+
     return {
         "title": playlist_title,
         "track_count": len(tracks),
@@ -93,36 +100,15 @@ def fetch_ytmusic_playlist(playlist_id: str) -> dict:
 
 
 def fetch_spotify_playlist(playlist_id: str) -> dict:
-    """Fetch all tracks from a Spotify playlist.
+    """Fetch all tracks from a Spotify playlist with preview URLs."""
+    from sources.spotify import get_playlist_tracks, _get_public_client
 
-    Returns {title, track_count, tracks: [{name, artist, album, spotify_link, ...}]}
-    Note: Spotify tracks don't have YT video IDs — we search YT Music to find them.
-    """
-    from sources.spotify import _get_client
-    sp = _get_client()
-
+    sp = _get_public_client()
     pl_info = sp.playlist(playlist_id, fields="name")
-    results = sp.playlist_tracks(playlist_id, limit=100)
+    tracks = get_playlist_tracks(playlist_id)
 
-    raw_tracks = []
-    while True:
-        for item in results["items"]:
-            t = item.get("track")
-            if not t:
-                continue
-            raw_tracks.append({
-                "name": t["name"],
-                "artist": ", ".join(a["name"] for a in t["artists"]),
-                "album": t["album"]["name"],
-                "spotify_link": t["external_urls"].get("spotify", ""),
-            })
-        if results["next"]:
-            results = sp.next(results)
-        else:
-            break
-
-    # Resolve YT video IDs for MERT embedding
-    tracks = _resolve_yt_ids(raw_tracks)
+    # Also resolve YT video IDs for playback in the UI
+    tracks = _resolve_yt_ids(tracks)
 
     return {
         "title": pl_info.get("name", "Unknown Playlist"),
