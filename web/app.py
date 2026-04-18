@@ -25,7 +25,13 @@ app.secret_key = config.SECRET_KEY
 # Support running behind reverse proxy (HuggingFace Spaces, etc.)
 from werkzeug.middleware.proxy_fix import ProxyFix
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
+# HF Spaces embeds apps in an iframe — cookies need SameSite=None + Secure
+if os.environ.get("PORT"):
+    app.config["SESSION_COOKIE_SAMESITE"] = "None"
+    app.config["SESSION_COOKIE_SECURE"] = True
+else:
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 # Initialize database on import
 db.init()
