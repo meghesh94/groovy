@@ -27,63 +27,38 @@ def parse_playlist_url(url: str) -> Optional[dict]:
 
 
 def fetch_ytmusic_playlist(playlist_id: str) -> dict:
-    """Fetch all tracks from a YT Music / YouTube playlist using yt-dlp.
+    """Fetch all tracks from a YT Music playlist using ytmusicapi (no yt-dlp).
 
-    Uses yt-dlp for reliable extraction — handles private playlists, auth, API changes.
     Returns {title, track_count, tracks: [{name, artist, album, yt_video_id, yt_link}]}
     """
-    import subprocess
-    import json as _json
+    from ytmusicapi import YTMusic
+    yt = YTMusic()
 
-    url = f"https://www.youtube.com/playlist?list={playlist_id}"
     try:
-        result = subprocess.run(
-            [
-                "yt-dlp", "--flat-playlist",
-                "--dump-json",
-                "--no-warnings",
-                url,
-            ],
-            capture_output=True, text=True, timeout=120,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        raise RuntimeError(f"yt-dlp failed: {e}")
+        pl = yt.get_playlist(playlist_id, limit=500)
+    except Exception as e:
+        raise RuntimeError(f"Failed to fetch YT Music playlist: {e}")
 
+    playlist_title = pl.get("title", "YouTube Playlist")
     tracks = []
-    playlist_title = "YouTube Playlist"
-    for line in result.stdout.strip().split("\n"):
-        if not line:
-            continue
-        try:
-            item = _json.loads(line)
-        except _json.JSONDecodeError:
-            continue
 
-        vid = item.get("id", "")
+    for item in pl.get("tracks", []):
+        vid = item.get("videoId", "")
         title = item.get("title", "")
-        artist = item.get("channel", item.get("uploader", ""))
+        artists = item.get("artists", [])
+        artist = ", ".join(a.get("name", "") for a in artists) if artists else ""
+        album_info = item.get("album")
+        album = album_info.get("name", "") if album_info else ""
 
-        # yt-dlp often gives "Artist - Song" in the title for music
-        if " - " in title and not artist:
-            parts = title.split(" - ", 1)
-            artist = parts[0].strip()
-            title = parts[1].strip()
-
-        if playlist_title == "YouTube Playlist" and item.get("playlist_title"):
-            playlist_title = item["playlist_title"]
-
-        if vid:
+        if vid and title:
             tracks.append({
                 "name": title,
                 "artist": artist,
-                "album": "",
+                "album": album,
                 "yt_video_id": vid,
                 "yt_link": f"https://music.youtube.com/watch?v={vid}",
                 "youtube_link": f"https://www.youtube.com/watch?v={vid}",
             })
-
-    if not tracks and result.stderr:
-        raise RuntimeError(f"yt-dlp error: {result.stderr[:200]}")
 
     # Resolve Spotify preview URLs for MERT scoring on servers
     try:
