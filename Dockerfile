@@ -5,34 +5,39 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
+# Create non-root user early so model cache is owned by them
+RUN useradd -m -u 1000 appuser
+
 WORKDIR /app
 
 # Install Python deps
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download MERT model into the image (~380MB)
-# This avoids runtime download which can fail on free tier
-ENV HF_HOME=/app/.hf_cache
-RUN python -c "from transformers import AutoModel, Wav2Vec2FeatureExtractor; \
-    Wav2Vec2FeatureExtractor.from_pretrained('m-a-p/MERT-v1-95M', trust_remote_code=True); \
-    AutoModel.from_pretrained('m-a-p/MERT-v1-95M', trust_remote_code=True); \
-    print('MERT model cached')"
+# Pre-download MERT model as appuser so cache is readable at runtime
+ENV HF_HOME=/home/appuser/.cache/huggingface
+USER appuser
+RUN python -c "\
+from transformers import AutoModel, Wav2Vec2FeatureExtractor; \
+print('Downloading MERT model...'); \
+Wav2Vec2FeatureExtractor.from_pretrained('m-a-p/MERT-v1-95M', trust_remote_code=True); \
+AutoModel.from_pretrained('m-a-p/MERT-v1-95M', trust_remote_code=True); \
+print('MERT model cached successfully')"
+
+# Switch back to root for file operations
+USER root
 
 # Copy app code
 COPY . .
+RUN chown -R appuser:appuser /app
 
 # Persistent data (SQLite, audio cache, MERT index)
-# HF Spaces runs as uid 1000 — ensure /data is writable
 ENV GROOVY_DATA_DIR=/data
-RUN mkdir -p /data/audio_cache && chmod -R 777 /data
+RUN mkdir -p /data/audio_cache && chown -R appuser:appuser /data
 
 # HF Spaces exposes port 7860
 ENV PORT=7860
 EXPOSE 7860
 
-# Run as non-root (HF Spaces requirement)
-RUN useradd -m -u 1000 appuser
 USER appuser
-
 CMD ["python", "web/app.py"]
