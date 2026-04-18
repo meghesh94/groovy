@@ -137,23 +137,41 @@ body {
     line-height: 1.6;
 }
 
-.google-login-btn {
-    display: inline-flex;
-    align-items: center;
+.auth-form {
+    display: flex;
+    flex-direction: column;
     gap: 10px;
-    padding: 12px 28px;
-    background: var(--bg-card);
-    color: var(--text-primary);
-    border: 1px solid var(--border);
-    border-radius: var(--border-radius);
-    font-size: 1rem;
-    font-weight: 500;
-    text-decoration: none;
-    transition: all 0.2s;
+    max-width: 300px;
+    margin: 0 auto;
 }
-.google-login-btn:hover {
-    background: var(--bg-card-hover);
-    border-color: var(--accent);
+
+.auth-input {
+    padding: 12px 16px;
+    font-size: 0.95rem;
+    text-align: center;
+}
+
+.auth-error {
+    font-size: 0.8rem;
+    color: var(--red);
+    text-align: center;
+}
+
+.auth-toggle {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-top: 8px;
+}
+
+.auth-toggle a {
+    color: var(--accent);
+    text-decoration: none;
+}
+.auth-toggle a:hover { text-decoration: underline; }
+
+.user-name {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
 }
 
 /* ── Main Content ─────────────────────────────────────────────── */

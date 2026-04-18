@@ -10,7 +10,6 @@ from collections import Counter
 from datetime import date
 from queue import Empty
 
-from authlib.integrations.flask_client import OAuth
 from flask import Flask, Response, jsonify, redirect, render_template, request, send_from_directory, session, url_for
 
 # Add parent dir to path so we can import the existing modules
@@ -31,25 +30,13 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 # Initialize database on import
 db.init()
 
-# ── Google OAuth ───────────────────────────────────────────────────
-
-oauth = OAuth(app)
-oauth.register(
-    name="google",
-    client_id=config.GOOGLE_CLIENT_ID,
-    client_secret=config.GOOGLE_CLIENT_SECRET,
-    server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
-    client_kwargs={"scope": "openid email profile"},
-)
-
-
 def login_required(f):
     @functools.wraps(f)
     def decorated(*args, **kwargs):
         if "user_id" not in session:
             if request.path.startswith("/api/"):
                 return jsonify({"error": "Login required"}), 401
-            return redirect(url_for("login"))
+            return redirect("/")
         return f(*args, **kwargs)
     return decorated
 
@@ -60,42 +47,45 @@ def current_user_id() -> str:
 
 # ── Auth routes ────────────────────────────────────────────────────
 
-@app.route("/auth/login")
+@app.route("/auth/login", methods=["POST"])
 def login():
-    # Dev bypass: skip Google OAuth when credentials aren't configured
-    if not config.GOOGLE_CLIENT_ID or not config.GOOGLE_CLIENT_SECRET:
-        user = db.upsert_user(
-            user_id="dev-user",
-            email="dev@groovy.local",
-            name="Dev User",
-            picture="",
-        )
-        session["user_id"] = user["id"]
-        session["user_name"] = user["name"]
-        session["user_picture"] = user["picture"]
-        return redirect("/")
+    body = request.get_json(silent=True) or {}
+    username = body.get("username", "").strip()
+    password = body.get("password", "")
 
-    redirect_uri = url_for("auth_callback", _external=True)
-    return oauth.google.authorize_redirect(redirect_uri)
+    if not username or not password:
+        return jsonify({"error": "Username and password required"}), 400
 
+    user = db.authenticate_user(username, password)
+    if not user:
+        return jsonify({"error": "Invalid username or password"}), 401
 
-@app.route("/auth/callback")
-def auth_callback():
-    token = oauth.google.authorize_access_token()
-    userinfo = token.get("userinfo")
-    if not userinfo:
-        return "Login failed", 400
-
-    user = db.upsert_user(
-        user_id=userinfo["sub"],
-        email=userinfo["email"],
-        name=userinfo.get("name", ""),
-        picture=userinfo.get("picture", ""),
-    )
     session["user_id"] = user["id"]
     session["user_name"] = user["name"]
-    session["user_picture"] = user["picture"]
-    return redirect("/")
+    return jsonify({"ok": True})
+
+
+@app.route("/auth/register", methods=["POST"])
+def register():
+    body = request.get_json(silent=True) or {}
+    username = body.get("username", "").strip()
+    password = body.get("password", "")
+    name = body.get("name", "").strip()
+
+    if not username or not password:
+        return jsonify({"error": "Username and password required"}), 400
+    if len(username) < 3:
+        return jsonify({"error": "Username must be at least 3 characters"}), 400
+    if len(password) < 4:
+        return jsonify({"error": "Password must be at least 4 characters"}), 400
+
+    user = db.create_user(username, password, name)
+    if not user:
+        return jsonify({"error": "Username already taken"}), 409
+
+    session["user_id"] = user["id"]
+    session["user_name"] = user["name"]
+    return jsonify({"ok": True})
 
 
 @app.route("/auth/logout")
@@ -112,7 +102,6 @@ def api_me():
         "logged_in": True,
         "user_id": session["user_id"],
         "name": session.get("user_name", ""),
-        "picture": session.get("user_picture", ""),
     })
 
 

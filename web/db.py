@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -35,9 +36,9 @@ def init():
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
-                email TEXT UNIQUE NOT NULL,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL DEFAULT '',
                 name TEXT DEFAULT '',
-                picture TEXT DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
@@ -95,20 +96,34 @@ def init():
 # ── Users ──────────────────────────────────────────────────────────
 
 
-def upsert_user(user_id: str, email: str, name: str = "", picture: str = "") -> dict:
-    """Create or update a user from Google OAuth info. Returns the user dict."""
+def _hash_password(password: str) -> str:
+    import hashlib
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def create_user(username: str, password: str, name: str = "") -> dict | None:
+    """Register a new user. Returns user dict or None if username taken."""
+    uid = hashlib.sha256(username.encode()).hexdigest()[:16]
+    try:
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO users (id, username, password_hash, name) VALUES (?, ?, ?, ?)",
+                (uid, username, _hash_password(password), name or username),
+            )
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+            return dict(row)
+    except sqlite3.IntegrityError:
+        return None
+
+
+def authenticate_user(username: str, password: str) -> dict | None:
+    """Check credentials. Returns user dict or None."""
     with get_db() as conn:
-        conn.execute(
-            """INSERT INTO users (id, email, name, picture)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(id) DO UPDATE SET
-                   email = excluded.email,
-                   name = excluded.name,
-                   picture = excluded.picture""",
-            (user_id, email, name, picture),
-        )
-        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-        return dict(row)
+        row = conn.execute(
+            "SELECT * FROM users WHERE username = ? AND password_hash = ?",
+            (username, _hash_password(password)),
+        ).fetchone()
+        return dict(row) if row else None
 
 
 def get_user(user_id: str) -> dict | None:

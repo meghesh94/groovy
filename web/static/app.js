@@ -4,6 +4,12 @@ function groovyApp() {
     return {
         // Auth
         user: null,
+        authMode: 'login',  // 'login' | 'register'
+        authUsername: '',
+        authPassword: '',
+        authName: '',
+        authError: '',
+        authLoading: false,
 
         // Navigation
         currentView: 'today',  // 'today' | 'collection' | 'settings'
@@ -84,6 +90,37 @@ function groovyApp() {
                 this.user = data.logged_in ? data : null;
             } catch (e) {
                 console.error('Failed to load user:', e);
+            }
+        },
+
+        async authSubmit() {
+            this.authError = '';
+            this.authLoading = true;
+            const endpoint = this.authMode === 'login' ? '/auth/login' : '/auth/register';
+            try {
+                const res = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username: this.authUsername,
+                        password: this.authPassword,
+                        name: this.authName,
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    this.authError = data.error;
+                    return;
+                }
+                // Logged in — reload everything
+                this.authUsername = '';
+                this.authPassword = '';
+                this.authName = '';
+                await this.init();
+            } catch (e) {
+                this.authError = 'Connection failed.';
+            } finally {
+                this.authLoading = false;
             }
         },
 
