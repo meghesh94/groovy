@@ -1,0 +1,29 @@
+# Secrets
+.env
+oauth.json
+credentials.json
+client_secret.json
+.spotify_cache
+
+# Audio cache (large WAV files)
+audio_cache/
+uploads/
+
+# MERT model cache
+library_index.npz
+
+# Database
+sotd.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+env/
+venv/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
