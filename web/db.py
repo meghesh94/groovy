@@ -1,4 +1,4 @@
-"""SQLite database for SOTD Music Agent."""
+"""SQLite database for Groovy."""
 
 from __future__ import annotations
 
@@ -32,8 +32,17 @@ def init():
     """Create tables if they don't exist."""
     with get_db() as conn:
         conn.executescript("""
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                name TEXT DEFAULT '',
+                picture TEXT DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
             CREATE TABLE IF NOT EXISTS playlists (
                 id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id),
                 url TEXT NOT NULL,
                 platform TEXT NOT NULL,
                 title TEXT NOT NULL,
@@ -54,6 +63,7 @@ def init():
 
             CREATE TABLE IF NOT EXISTS songs (
                 id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id),
                 name TEXT NOT NULL,
                 artist TEXT NOT NULL,
                 album TEXT DEFAULT '',
@@ -72,14 +82,39 @@ def init():
         """)
 
 
+# ── Users ──────────────────────────────────────────────────────────
+
+
+def upsert_user(user_id: str, email: str, name: str = "", picture: str = "") -> dict:
+    """Create or update a user from Google OAuth info. Returns the user dict."""
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO users (id, email, name, picture)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   email = excluded.email,
+                   name = excluded.name,
+                   picture = excluded.picture""",
+            (user_id, email, name, picture),
+        )
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return dict(row)
+
+
+def get_user(user_id: str) -> dict | None:
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+
 # ── Playlists ──────────────────────────────────────────────────────
 
 
-def add_playlist(playlist_id: str, url: str, platform: str, title: str):
+def add_playlist(user_id: str, playlist_id: str, url: str, platform: str, title: str):
     with get_db() as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO playlists (id, url, platform, title) VALUES (?, ?, ?, ?)",
-            (playlist_id, url, platform, title),
+            "INSERT OR IGNORE INTO playlists (id, user_id, url, platform, title) VALUES (?, ?, ?, ?, ?)",
+            (playlist_id, user_id, url, platform, title),
         )
 
 
@@ -104,16 +139,17 @@ def add_playlist_tracks(playlist_id: str, tracks: list[dict]):
         )
 
 
-def get_playlists() -> list[dict]:
+def get_playlists(user_id: str) -> list[dict]:
     with get_db() as conn:
         rows = conn.execute("""
             SELECT p.id, p.url, p.platform, p.title,
                    COUNT(pt.id) AS track_count
             FROM playlists p
             LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
+            WHERE p.user_id = ?
             GROUP BY p.id
             ORDER BY p.created_at
-        """).fetchall()
+        """, (user_id,)).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -123,25 +159,29 @@ def get_playlist(playlist_id: str) -> dict | None:
         return dict(row) if row else None
 
 
-def remove_playlist(playlist_id: str):
+def remove_playlist(user_id: str, playlist_id: str):
     with get_db() as conn:
-        conn.execute("DELETE FROM playlists WHERE id = ?", (playlist_id,))
+        conn.execute(
+            "DELETE FROM playlists WHERE id = ? AND user_id = ?",
+            (playlist_id, user_id),
+        )
 
 
-def get_all_tracks() -> list[dict]:
-    """Get all tracks across all playlists, deduped by (name, artist)."""
+def get_all_tracks(user_id: str) -> list[dict]:
+    """Get all tracks across a user's playlists, deduped by (name, artist)."""
     with get_db() as conn:
         rows = conn.execute("""
-            SELECT name, artist, album, yt_video_id, spotify_link, genres
-            FROM playlist_tracks
-            GROUP BY LOWER(TRIM(name)), LOWER(TRIM(artist))
-            ORDER BY id
-        """).fetchall()
+            SELECT pt.name, pt.artist, pt.album, pt.yt_video_id, pt.spotify_link, pt.genres
+            FROM playlist_tracks pt
+            JOIN playlists p ON p.id = pt.playlist_id
+            WHERE p.user_id = ?
+            GROUP BY LOWER(TRIM(pt.name)), LOWER(TRIM(pt.artist))
+            ORDER BY pt.id
+        """, (user_id,)).fetchall()
         tracks = []
         for r in rows:
             t = dict(r)
             t["genres"] = json.loads(t["genres"])
-            # Ensure youtube_link is set for MERT indexing
             if t["yt_video_id"]:
                 t["youtube_link"] = f"https://www.youtube.com/watch?v={t['yt_video_id']}"
                 t["yt_link"] = t["youtube_link"]
@@ -152,15 +192,16 @@ def get_all_tracks() -> list[dict]:
 # ── Songs (discovered) ─────────────────────────────────────────────
 
 
-def save_song(song: dict):
+def save_song(user_id: str, song: dict):
     with get_db() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO songs
-               (id, name, artist, album, yt_video_id, yt_link, spotify_link,
+               (id, user_id, name, artist, album, yt_video_id, yt_link, spotify_link,
                 view_count, release_year, source_query, source_strategy, mert_data)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 song["_id"],
+                user_id,
                 song.get("name", ""),
                 song.get("artist", ""),
                 song.get("album", ""),
@@ -176,9 +217,12 @@ def save_song(song: dict):
         )
 
 
-def get_song(song_id: str) -> dict | None:
+def get_song(user_id: str, song_id: str) -> dict | None:
     with get_db() as conn:
-        row = conn.execute("SELECT * FROM songs WHERE id = ?", (song_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM songs WHERE id = ? AND user_id = ?",
+            (song_id, user_id),
+        ).fetchone()
         if not row:
             return None
         s = dict(row)
@@ -187,25 +231,29 @@ def get_song(song_id: str) -> dict | None:
         return s
 
 
-def update_song_status(song_id: str, status: str):
+def update_song_status(user_id: str, song_id: str, status: str):
     with get_db() as conn:
-        conn.execute("UPDATE songs SET status = ? WHERE id = ?", (status, song_id))
-
-
-def update_song_rating(song_id: str, rating: int):
-    with get_db() as conn:
-        status = "approved" if rating >= 4 else "discovered"
         conn.execute(
-            "UPDATE songs SET rating = ?, status = ? WHERE id = ?",
-            (rating, status, song_id),
+            "UPDATE songs SET status = ? WHERE id = ? AND user_id = ?",
+            (status, song_id, user_id),
         )
 
 
-def get_approved_tracks() -> list[dict]:
+def update_song_rating(user_id: str, song_id: str, rating: int):
+    with get_db() as conn:
+        status = "approved" if rating >= 4 else "discovered"
+        conn.execute(
+            "UPDATE songs SET rating = ?, status = ? WHERE id = ? AND user_id = ?",
+            (rating, status, song_id, user_id),
+        )
+
+
+def get_approved_tracks(user_id: str) -> list[dict]:
     """Get all approved/highly-rated songs as track dicts (for taste feedback loop)."""
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT * FROM songs WHERE status = 'approved' ORDER BY created_at"
+            "SELECT * FROM songs WHERE user_id = ? AND status = 'approved' ORDER BY created_at",
+            (user_id,),
         ).fetchall()
         tracks = []
         for r in rows:

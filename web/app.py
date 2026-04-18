@@ -1,5 +1,6 @@
-"""Flask web app for SOTD Music Agent."""
+"""Flask web app for Groovy."""
 
+import functools
 import json
 import os
 import sys
@@ -8,30 +9,105 @@ import webbrowser
 from collections import Counter
 from queue import Empty
 
-from flask import Flask, Response, jsonify, render_template, request, send_from_directory
+from authlib.integrations.flask_client import OAuth
+from flask import Flask, Response, jsonify, redirect, render_template, request, send_from_directory, session, url_for
 
 # Add parent dir to path so we can import the existing modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import config
 from web import db
 from web.discovery_runner import RunConfig, get_event_queue, is_running, start_discovery, force_reset
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
+app.secret_key = config.SECRET_KEY
 
 # Initialize database on import
 db.init()
 
-# Background indexing state (still in-memory — transient by nature)
+# ── Google OAuth ───────────────────────────────────────────────────
+
+oauth = OAuth(app)
+oauth.register(
+    name="google",
+    client_id=config.GOOGLE_CLIENT_ID,
+    client_secret=config.GOOGLE_CLIENT_SECRET,
+    server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+    client_kwargs={"scope": "openid email profile"},
+)
+
+
+def login_required(f):
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        if "user_id" not in session:
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Login required"}), 401
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorated
+
+
+def current_user_id() -> str:
+    return session["user_id"]
+
+
+# ── Auth routes ────────────────────────────────────────────────────
+
+@app.route("/auth/login")
+def login():
+    redirect_uri = url_for("auth_callback", _external=True)
+    return oauth.google.authorize_redirect(redirect_uri)
+
+
+@app.route("/auth/callback")
+def auth_callback():
+    token = oauth.google.authorize_access_token()
+    userinfo = token.get("userinfo")
+    if not userinfo:
+        return "Login failed", 400
+
+    user = db.upsert_user(
+        user_id=userinfo["sub"],
+        email=userinfo["email"],
+        name=userinfo.get("name", ""),
+        picture=userinfo.get("picture", ""),
+    )
+    session["user_id"] = user["id"]
+    session["user_name"] = user["name"]
+    session["user_picture"] = user["picture"]
+    return redirect("/")
+
+
+@app.route("/auth/logout")
+def logout():
+    session.clear()
+    return redirect("/")
+
+
+@app.route("/api/me")
+def api_me():
+    if "user_id" not in session:
+        return jsonify({"logged_in": False})
+    return jsonify({
+        "logged_in": True,
+        "user_id": session["user_id"],
+        "name": session.get("user_name", ""),
+        "picture": session.get("user_picture", ""),
+    })
+
+
+# ── Background indexing state (transient) ──────────────────────────
+
 _indexing = False
 _index_progress = {"done": 0, "total": 0, "current_song": ""}
 
 
-def _get_all_tracks() -> list[dict]:
+def _get_all_tracks(user_id: str) -> list[dict]:
     """Get all tracks across all playlists + approved songs (deduped)."""
-    tracks = db.get_all_tracks()
-    approved = db.get_approved_tracks()
+    tracks = db.get_all_tracks(user_id)
+    approved = db.get_approved_tracks(user_id)
 
-    # Dedup approved songs against playlist tracks
     seen = {(t["name"].lower().strip(), t["artist"].lower().strip()) for t in tracks}
     for t in approved:
         key = (t["name"].lower().strip(), t["artist"].lower().strip())
@@ -46,7 +122,6 @@ def _get_all_tracks() -> list[dict]:
 
 
 def _build_profile_from_tracks(tracks: list[dict]) -> dict:
-    """Build a taste profile from a list of track dicts."""
     artist_counter = Counter()
     genre_counter = Counter()
     for t in tracks:
@@ -82,8 +157,10 @@ def serve_audio(video_id):
 # ── API: Profile ────────────────────────────────────────────────────
 
 @app.route("/api/profile")
+@login_required
 def api_profile():
-    tracks = _get_all_tracks()
+    uid = current_user_id()
+    tracks = _get_all_tracks(uid)
     if not tracks:
         return jsonify({
             "track_count": 0,
@@ -92,7 +169,6 @@ def api_profile():
             "source": "none",
         })
     profile = _build_profile_from_tracks(tracks)
-    # Include songs with video IDs for the vinyl grid
     songs_for_grid = [
         {"name": t["name"], "artist": t["artist"], "yt_video_id": t["yt_video_id"]}
         for t in tracks if t.get("yt_video_id")
@@ -109,8 +185,10 @@ def api_profile():
 # ── API: Playlists ──────────────────────────────────────────────────
 
 @app.route("/api/playlists")
+@login_required
 def api_playlists():
-    playlists = db.get_playlists()
+    uid = current_user_id()
+    playlists = db.get_playlists(uid)
     return jsonify([{
         "url": pl["url"],
         "platform": pl["platform"],
@@ -121,7 +199,9 @@ def api_playlists():
 
 
 @app.route("/api/playlists", methods=["POST"])
+@login_required
 def api_add_playlist():
+    uid = current_user_id()
     body = request.get_json(silent=True) or {}
     url = body.get("url", "").strip()
     if not url:
@@ -132,16 +212,15 @@ def api_add_playlist():
     if not parsed:
         return jsonify({"error": "Unrecognized playlist URL. Supports Spotify and YT Music playlists."}), 400
 
-    # Check for duplicates
     if db.get_playlist(parsed["playlist_id"]):
         return jsonify({"error": "Playlist already added."}), 409
 
-    # Fetch in background to not block the UI
     def _fetch():
         try:
             from sources.playlist_import import fetch_playlist
             result = fetch_playlist(url)
             db.add_playlist(
+                user_id=uid,
                 playlist_id=result["playlist_id"],
                 url=result["url"],
                 platform=result["platform"],
@@ -159,19 +238,20 @@ def api_add_playlist():
 
 
 @app.route("/api/playlists/<playlist_id>", methods=["DELETE"])
+@login_required
 def api_remove_playlist(playlist_id):
-    db.remove_playlist(playlist_id)
+    db.remove_playlist(current_user_id(), playlist_id)
     return jsonify({"ok": True})
 
 
 @app.route("/api/playlists/index", methods=["POST"])
+@login_required
 def api_index_playlists():
-    """Build MERT index from all imported playlist tracks."""
     global _indexing
     if _indexing:
         return jsonify({"error": "Indexing already in progress"}), 409
 
-    tracks = _get_all_tracks()
+    tracks = _get_all_tracks(current_user_id())
     if not tracks:
         return jsonify({"error": "No tracks to index. Add playlists first."}), 400
 
@@ -204,6 +284,7 @@ def api_index_playlists():
 
 
 @app.route("/api/playlists/index-status")
+@login_required
 def api_index_status():
     if _indexing:
         return jsonify({
@@ -231,14 +312,13 @@ def api_index_status():
 # ── API: Queries ────────────────────────────────────────────────────
 
 @app.route("/api/queries")
+@login_required
 def api_queries():
-    tracks = _get_all_tracks()
+    tracks = _get_all_tracks(current_user_id())
 
-    # Radio seeds: actual songs from playlists
     seeds = [{"query": f"{t['name']} {t['artist']}", "name": t["name"], "artist": t["artist"]}
              for t in tracks if t.get("name") and t.get("artist")]
 
-    # Artist exploration: unique artists from playlists
     seen = set()
     artists = []
     for t in tracks:
@@ -258,19 +338,21 @@ def api_queries():
 # ── API: Discovery ──────────────────────────────────────────────────
 
 @app.route("/api/discover/reset", methods=["POST"])
+@login_required
 def api_discover_reset():
     force_reset()
     return jsonify({"ok": True})
 
 
 @app.route("/api/discover", methods=["POST"])
+@login_required
 def api_discover():
     if is_running():
         return jsonify({"error": "A discovery run is already active."}), 409
 
     body = request.get_json(silent=True) or {}
 
-    config = RunConfig(
+    run_config = RunConfig(
         radio_seeds_count=body.get("radio_seeds_count", 8),
         vibe_queries_count=body.get("vibe_queries_count", 8),
         artist_vibe_count=body.get("artist_vibe_count", 5),
@@ -285,13 +367,16 @@ def api_discover():
         skip_words=body.get("skip_words", RunConfig().skip_words),
     )
 
-    tracks = _get_all_tracks()
-    run_id = start_discovery(config, library_tracks=tracks if tracks else None)
+    tracks = _get_all_tracks(current_user_id())
+    run_id = start_discovery(run_config, library_tracks=tracks if tracks else None)
     return jsonify({"run_id": run_id})
 
 
 @app.route("/api/discover/stream")
+@login_required
 def api_discover_stream():
+    uid = current_user_id()
+
     def event_stream():
         queue = get_event_queue()
         while True:
@@ -301,9 +386,8 @@ def api_discover_stream():
                 yield ":\n\n"  # SSE keepalive
                 continue
 
-            # Persist discovered songs to database
             if event.get("type") == "result" and "song" in event:
-                db.save_song(event["song"])
+                db.save_song(uid, event["song"])
 
             yield f"data: {json.dumps(event)}\n\n"
 
@@ -317,31 +401,36 @@ def api_discover_stream():
 # ── API: Song actions ───────────────────────────────────────────────
 
 @app.route("/api/songs/<song_id>/approve", methods=["POST"])
+@login_required
 def api_approve(song_id):
-    song = db.get_song(song_id)
+    uid = current_user_id()
+    song = db.get_song(uid, song_id)
     if not song:
         return jsonify({"error": "Song not found"}), 404
 
-    db.update_song_status(song_id, "approved")
+    db.update_song_status(uid, song_id, "approved")
     return jsonify({"ok": True, "song": song["name"]})
 
 
 @app.route("/api/songs/<song_id>/rate", methods=["POST"])
+@login_required
 def api_rate(song_id):
-    song = db.get_song(song_id)
+    uid = current_user_id()
+    song = db.get_song(uid, song_id)
     if not song:
         return jsonify({"error": "Song not found"}), 404
 
     body = request.get_json(silent=True) or {}
     rating = body.get("rating", 0)
-    db.update_song_rating(song_id, rating)
+    db.update_song_rating(uid, song_id, rating)
 
     return jsonify({"ok": True, "song": song["name"], "rating": rating})
 
 
 @app.route("/api/songs/<song_id>/skip", methods=["POST"])
+@login_required
 def api_skip(song_id):
-    db.update_song_status(song_id, "skipped")
+    db.update_song_status(current_user_id(), song_id, "skipped")
     return jsonify({"ok": True})
 
 
@@ -349,6 +438,6 @@ def api_skip(song_id):
 
 if __name__ == "__main__":
     port = 5555
-    print(f"\n  SOTD Music Agent → http://localhost:{port}\n")
+    print(f"\n  Groovy → http://localhost:{port}\n")
     webbrowser.open(f"http://localhost:{port}")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)

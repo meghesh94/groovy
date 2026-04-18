@@ -2,6 +2,9 @@
 
 function sotdApp() {
     return {
+        // Auth
+        user: null,
+
         // Profile
         profile: null,
         libraryStats: null,
@@ -54,6 +57,8 @@ function sotdApp() {
         eventSource: null,
 
         async init() {
+            await this.loadUser();
+            if (!this.user) return;  // not logged in — show login screen
             await Promise.all([
                 this.loadProfile(),
                 this.loadQueries(),
@@ -62,6 +67,16 @@ function sotdApp() {
             ]);
             // Poll index status every 5s while indexing
             setInterval(() => { if (this.indexing) this.pollIndexStatus(); }, 5000);
+        },
+
+        async loadUser() {
+            try {
+                const res = await fetch('/api/me');
+                const data = await res.json();
+                this.user = data.logged_in ? data : null;
+            } catch (e) {
+                console.error('Failed to load user:', e);
+            }
         },
 
         async loadProfile() {
