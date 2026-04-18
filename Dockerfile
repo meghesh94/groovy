@@ -11,6 +11,14 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Pre-download MERT model into the image (~380MB)
+# This avoids runtime download which can fail on free tier
+ENV HF_HOME=/app/.hf_cache
+RUN python -c "from transformers import AutoModel, Wav2Vec2FeatureExtractor; \
+    Wav2Vec2FeatureExtractor.from_pretrained('m-a-p/MERT-v1-95M', trust_remote_code=True); \
+    AutoModel.from_pretrained('m-a-p/MERT-v1-95M', trust_remote_code=True); \
+    print('MERT model cached')"
+
 # Copy app code
 COPY . .
 
